@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="manifest.webmanifest"><meta name="theme-color" content="#0f172a">
+<title>FormCoach</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0f172a;color:#e2e8f0;font:16px system-ui,sans-serif;padding:12px;max-width:640px;margin:auto}
+h1{font-size:20px;margin:4px 0 10px}h2{font-size:15px;margin:14px 0 6px;color:#94a3b8}
+.row{display:flex;gap:8px;margin-bottom:8px}select,input,button{font:inherit;padding:10px;border-radius:10px;border:0;background:#1e293b;color:#e2e8f0;flex:1;min-width:0}
+button{background:#2563eb;font-weight:600}button.g{background:#334155}button.r{background:#dc2626}
+.stage{position:relative;background:#000;border-radius:12px;overflow:hidden}canvas{width:100%;display:block}video{display:none}
+.big{font-size:56px;font-weight:700;text-align:center;line-height:1}.card{background:#1e293b;border-radius:12px;padding:10px;margin-top:8px}
+#fb{text-align:center;font-weight:600;min-height:24px}.ok{color:#4ade80}.bad{color:#f87171}
+.bar{height:14px;background:#334155;border-radius:7px;overflow:hidden}.bar i{display:block;height:100%;background:#38bdf8}
+.m{display:grid;grid-template-columns:90px 1fr 44px;gap:8px;align-items:center;margin:5px 0;font-size:14px}small{color:#94a3b8}
+</style></head><body>
+<h1>🏋️ FormCoach</h1>
+<div class="row"><select id="ex"><option value="squat">Kniebeuge</option><option value="curl">Bizeps-Curl</option><option value="press">Schulterdrücken</option><option value="bench">Bankdrücken</option><option value="crow">Rudern am Kabelturm</option><option value="brow">Rudern mit Langhantel</option><option value="calf">Wadenheben</option><option value="pull">Klimmzüge</option><option value="bss">Bulgarian Split Squat</option></select>
+<input id="kg" type="number" inputmode="decimal" placeholder="kg / Zusatz-kg" step="0.5"></div>
+<div class="row"><input id="bw" type="number" inputmode="decimal" placeholder="Körpergewicht kg (für KG-Übungen)"></div><small id="tip"></small>
+<div class="stage"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+<div class="card"><div class="big"><span id="reps">0</span> <small>Wdh.</small></div><div id="fb">Kamera starten und seitlich zur Kamera stellen</div><div style="text-align:center"><small id="info"></small></div></div>
+<div class="row" style="margin-top:8px"><button id="go">▶ Kamera</button><button id="cam" class="g">🔄 Kamera wechseln</button><button id="fin" class="r">Satz beenden</button></div>
+<div id="res"></div>
+<h2>Muskelauswertung (7 Tage, Volumen)</h2><div class="card" id="mus"></div>
+<h2>Letzte Sätze</h2><div class="card" id="hist"></div>
+<small>Tipp: Handy ~2–3 m entfernt, Körper im Profil (Seitenansicht), ganzer Körper sichtbar, gutes Licht. Die Formprüfung ist eine Orientierung, kein Ersatz für Trainer:in.</small>
+<script type="module">
+import {PoseLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+const $=id=>document.getElementById(id),v=$('v'),c=$('c'),g=c.getContext('2d');
+const ang=(a,b,d)=>{const r=Math.atan2(d.y-b.y,d.x-b.x)-Math.atan2(a.y-b.y,a.x-b.x);let x=Math.abs(r*180/Math.PI);return x>180?360-x:x};
+const vert=(a,b)=>Math.atan2(Math.abs(b.x-a.x),Math.abs(b.y-a.y))*180/Math.PI;
+const EX={
+squat:{n:'Kniebeuge',a:p=>ang(p.h,p.k,p.a),home:a=>a>160,ext:a=>a<115,
+ chk:t=>[t.min>100&&'Tiefer gehen',t.lean>60&&'Rücken aufrechter halten']},
+curl:{n:'Bizeps-Curl',a:p=>ang(p.s,p.e,p.w),home:a=>a>150,ext:a=>a<60,
+ chk:t=>[t.arm>30&&'Ellbogen am Körper halten',t.lean-t.lmin>15&&'Nicht mit dem Oberkörper schwingen',t.min>45&&'Mehr Hub']},
+press:{n:'Schulterdrücken',a:p=>ang(p.s,p.e,p.w),home:a=>a<100,ext:a=>a>150,
+ chk:t=>[t.max<165&&'Arme ganz strecken',t.lean>15&&'Nicht ins Hohlkreuz gehen']},
+bench:{n:'Bankdrücken',a:p=>ang(p.s,p.e,p.w),home:a=>a>160,ext:a=>a<100,
+ chk:t=>[t.min>90&&'Tiefer zur Brust absenken',t.fb>20&&'Unterarme senkrecht halten']},
+crow:{n:'Rudern am Kabelturm',a:p=>ang(p.s,p.e,p.w),home:a=>a>150,ext:a=>a<100,
+ chk:t=>[t.min>85&&'Ellbogen weiter nach hinten ziehen',t.lean-t.lmin>20&&'Oberkörper ruhig halten, nicht mitschwingen']},
+brow:{n:'Rudern mit Langhantel',a:p=>ang(p.s,p.e,p.w),home:a=>a>150,ext:a=>a<100,
+ chk:t=>[t.lmin<30&&'Oberkörper tiefer halten (ca. 45° vorgebeugt)',t.lean-t.lmin>15&&'Nicht mit dem Oberkörper hochreißen',t.min>90&&'Hantel höher zum Bauch ziehen']},
+calf:{n:'Wadenheben',bwf:1,a:p=>Math.atan2(Math.abs(p.f.y-p.l.y),Math.abs(p.f.x-p.l.x))*180/Math.PI,home:a=>a<12,ext:a=>a>25,
+ chk:t=>[t.max<35&&'Höher auf die Zehen',t.kmin<165&&'Knie gestreckt halten']},
+pull:{n:'Klimmzüge',bwf:1,a:p=>(p.w.y-p.n.y)/Math.hypot(p.s.x-p.h.x,p.s.y-p.h.y),home:a=>a<-.6,ext:a=>a>-.15,u:a=>a.toFixed(2),
+ chk:t=>[t.max<-.05&&'Kinn über die Stange ziehen',t.lean-t.lmin>20&&'Nicht schwingen oder kippen']},
+bss:{n:'Bulgarian Split Squat',bwf:.7,a:p=>{const f=p.a.y>=p.A.y?[p.h,p.k,p.a]:[p.H,p.K,p.A];return ang(f[0],f[1],f[2])},home:a=>a>155,ext:a=>a<105,
+ chk:t=>[t.min>95&&'Tiefer gehen (Oberschenkel parallel)',t.lean>40&&'Oberkörper aufrechter halten']}};
+const MU={squat:{Quadrizeps:1,Gesäß:.8,Beinbeuger:.5,Rumpf:.3},curl:{Bizeps:1,Unterarme:.4},press:{Schultern:1,Trizeps:.6,'Obere Brust':.3},bench:{Brust:1,Trizeps:.6,Schultern:.4},
+crow:{Rücken:1,Bizeps:.5,'Hintere Schulter':.4,Unterarme:.3},brow:{Rücken:1,Bizeps:.5,'Hintere Schulter':.4,Rumpf:.3},
+calf:{Waden:1},pull:{Rücken:1,Bizeps:.6,Unterarme:.4,'Hintere Schulter':.3},bss:{Quadrizeps:1,Gesäß:1,Beinbeuger:.4,Rumpf:.3}};
+EX.squat.tip='Im Profil filmen, ganzer Körper im Bild.';EX.curl.tip='Im Profil filmen, Arm zur Kamera.';EX.press.tip='Im Profil filmen, Arm zur Kamera.';
+EX.bench.tip='Von der Seite filmen, Arm zur Kamera, Handgelenke und Ellbogen sichtbar.';
+EX.crow.tip='Von der Seite filmen, ganzer Körper im Bild.';
+EX.brow.tip='Im Profil filmen, Oberkörper ca. 45° vorgebeugt.';
+EX.calf.tip='Im Profil filmen, Ferse und Zehen müssen sichtbar sein (barfuß oder dünne Schuhe).';
+EX.pull.tip='Im Profil filmen, Kopf, Schultern und Hände im Bild. Körpergewicht eintragen, Zusatz-kg nur bei Gewichtsweste/-gürtel.';
+EX.bss.tip='Im Profil filmen, hinterer Fuß auf der Bank. Das vordere Bein wird automatisch erkannt.';
+const SIDE={l:{s:11,e:13,w:15,h:23,k:25,a:27,l:29,f:31},r:{s:12,e:14,w:16,h:24,k:26,a:28,l:30,f:32}};
+let lm,run=false,face='environment',stream,st,reps,scores,tr,sm,last=-1,sets=[];
+try{sets=JSON.parse(localStorage.getItem('fc')||'[]')}catch(e){}
+const save=()=>{try{localStorage.setItem('fc',JSON.stringify(sets))}catch(e){}};
+const fresh=()=>({min:999,max:-999,lean:0,lmin:999,arm:0,fb:0,kmin:999});
+function reset(){reps=0;scores=[];tr=fresh();st='home';sm=null;$('reps').textContent=0}
+function say(t){try{const u=new SpeechSynthesisUtterance(t);u.lang='de-DE';speechSynthesis.cancel();speechSynthesis.speak(u)}catch(e){}}
+function step(p){
+ const cf=EX[$('ex').value],raw=cf.a(p);sm=sm==null?raw:sm*.6+raw*.4;const a=sm;
+ const ln=vert(p.h,p.s);
+ if(cf.home(a)&&st==='home')tr=fresh();
+ if(a<tr.min)tr.fb=vert(p.e,p.w);tr.kmin=Math.min(tr.kmin,ang(p.h,p.k,p.a));tr.min=Math.min(tr.min,a);tr.max=Math.max(tr.max,a);tr.lean=Math.max(tr.lean,ln);tr.lmin=Math.min(tr.lmin,ln);tr.arm=Math.max(tr.arm,vert(p.s,p.e));
+ if(st==='home'&&cf.ext(a))st='ext';
+ else if(st==='ext'&&cf.home(a)){
+  const issues=cf.chk(tr).filter(Boolean),sc=Math.max(0,100-30*issues.length);
+  reps++;scores.push(sc);$('reps').textContent=reps;
+  const f=$('fb');f.className=issues.length?'bad':'ok';f.textContent=issues.length?'❌ '+issues.join(' · '):'✅ Saubere Wiederholung';
+  if(issues.length)say(issues[0]);st='home';tr=fresh();
+ }
+ $('info').textContent=cf.u?'Wert '+cf.u(a):'Winkel '+Math.round(a)+'°';
+ return !$('fb').classList.contains('bad');
+}
+function loop(){
+ if(!run)return;
+ if(v.readyState>=2&&v.currentTime!==last){
+  last=v.currentTime;
+  if(c.width!==v.videoWidth){c.width=v.videoWidth;c.height=v.videoHeight}
+  g.drawImage(v,0,0);
+  const r=lm.detectForVideo(v,performance.now());
+  if(r.landmarks&&r.landmarks[0]){
+   const L=r.landmarks[0],vis=s=>Object.values(SIDE[s]).reduce((x,i)=>x+(L[i].visibility||0),0);
+   const sd=SIDE[vis('l')>=vis('r')?'l':'r'],p={};
+   const pt=i=>({x:L[i].x*c.width,y:L[i].y*c.height});for(const k in sd)p[k]=pt(sd[k]);const od=SIDE[sd===SIDE.l?'r':'l'];p.H=pt(od.h);p.K=pt(od.k);p.A=pt(od.a);p.n=pt(0);
+   const ok=step(p);g.lineWidth=5;g.strokeStyle=ok?'#4ade80':'#f87171';g.fillStyle='#fff';
+   for(const ch of [['s','e','w'],['s','h','k','a']]){g.beginPath();ch.forEach((k,i)=>i?g.lineTo(p[k].x,p[k].y):g.moveTo(p[k].x,p[k].y));g.stroke()}
+   for(const k in p){g.beginPath();g.arc(p[k].x,p[k].y,6,0,7);g.fill()}
+  }
+ }
+ requestAnimationFrame(loop);
+}
+async function cam(){
+ if(stream)stream.getTracks().forEach(t=>t.stop());
+ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:face,width:640,height:480},audio:false});
+ v.srcObject=stream;await v.play();
+}
+$('go').onclick=async()=>{
+ if(run){run=false;stream&&stream.getTracks().forEach(t=>t.stop());$('go').textContent='▶ Kamera';return}
+ try{
+  $('fb').textContent='Lade Modell …';
+  if(!lm){const fs=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+   lm=await PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',delegate:'GPU'},runningMode:'VIDEO',numPoses:1})}
+  await cam();reset();run=true;$('go').textContent='⏹ Stopp';$('fb').className='';$('fb').textContent='Los geht’s!';loop();
+ }catch(e){$('fb').className='bad';$('fb').textContent='Kamera/Modell Fehler: '+e.message}
+};
+$('cam').onclick=async()=>{face=face==='user'?'environment':'user';if(run)await cam()};
+$('ex').onchange=()=>{reset();$('tip').textContent=EX[$('ex').value].tip};
+const e1=(kg,r)=>kg*(1+r/30),rnd=x=>Math.round(x/2.5)*2.5;
+$('fin').onclick=()=>{
+ if(!reps)return;const ex=$('ex').value,cf=EX[ex],kg=parseFloat($('kg').value)||0,bw=parseFloat($('bw').value)||0,base=(cf.bwf||0)*bw,load=kg+base;
+ const form=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
+ sets.push({ex,reps,kg,load,form,t:Date.now()});save();
+ const wt=w=>cf.bwf?(w>base+1?'+'+rnd(w-base)+' kg Zusatz':'Körpergewicht'):rnd(w)+' kg';
+ let h=`<div class="card"><b>${cf.n}: ${reps} Wdh.${kg?' × '+(cf.bwf?'+':'')+kg+' kg':''} · Form ${form}%</b>`;
+ if(load>0){const m=e1(load,reps);h+=`<br><small>Geschätztes 1RM: ${wt(m)} (Epley)<br>Nächste Gewichte: 5 Wdh. ≈ ${wt(m/(1+5/30))} · 8 Wdh. ≈ ${wt(m/(1+8/30))} · 12 Wdh. ≈ ${wt(m/(1+12/30))}</small>`;
+  if(form<70)h+=`<br><span class="bad">Form unter 70 % – erst Technik verbessern, Gewicht nicht steigern.</span>`}
+ else h+='<br><small>Gewicht (bei KG-Übungen Körpergewicht) eingeben, um Empfehlungen zu bekommen.</small>';
+ $('res').innerHTML=h+'</div>';reset();render();
+};
+function render(){
+ const wk=Date.now()-7*864e5,vol={};
+ sets.filter(s=>s.t>wk).forEach(s=>{for(const[m,w]of Object.entries(MU[s.ex]))vol[m]=(vol[m]||0)+s.reps*((s.load??s.kg)||1)*w});
+ const mx=Math.max(1,...Object.values(vol));
+ $('mus').innerHTML=Object.keys(vol).length?Object.entries(vol).sort((a,b)=>b[1]-a[1]).map(([m,x])=>`<div class="m"><span>${m}</span><div class="bar"><i style="width:${x/mx*100}%"></i></div><small>${Math.round(x/mx*100)}%</small></div>`).join(''):'<small>Noch keine Daten.</small>';
+ $('hist').innerHTML=sets.slice(-6).reverse().map(s=>`<div>${new Date(s.t).toLocaleDateString('de-DE')} · ${EX[s.ex].n}: ${s.reps}×${s.kg||'–'} kg · Form ${s.form}%</div>`).join('')||'<small>Noch keine Sätze.</small>';
+}
+try{$('bw').value=localStorage.getItem('fcbw')||''}catch(e){}
+$('bw').oninput=()=>{try{localStorage.setItem('fcbw',$('bw').value)}catch(e){}};
+$('tip').textContent=EX[$('ex').value].tip;reset();render();
+</script></body></html>
